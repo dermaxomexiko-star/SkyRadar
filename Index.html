@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="de"><head><meta charset="utf-8"><title>SkyRadar</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>
+:root{color-scheme:dark;--bg:#070b14;--pn:rgba(12,18,32,.9);--ln:#223250;--tx:#e6edf7;--mu:#7f90ad;--ac:#2ef2ff;--rd:#ff4d6d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--tx);font:14px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+body{position:relative}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;background:var(--bg)}
+.pn{position:absolute;background:var(--pn);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border:1px solid var(--ln);border-radius:14px}
+#top{top:8px;left:8px;right:8px;display:flex;gap:6px;padding:6px}
+#q{flex:1;min-width:0;background:#0b1424;border:1px solid var(--ln);border-radius:9px;color:var(--tx);padding:8px 10px;font:inherit;text-transform:uppercase}
+button{background:#0b1424;color:var(--tx);border:1px solid var(--ln);border-radius:9px;padding:8px 11px;font:inherit;cursor:pointer}
+button.on{border-color:var(--ac);color:var(--ac)}
+#st{top:62px;left:8px;padding:5px 10px;font-size:12px;display:flex;gap:7px;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;background:#ffb02e}
+.live .dot{background:#3dff9a;box-shadow:0 0 8px #3dff9a}
+#em{top:94px;left:8px;display:none;padding:4px;gap:4px;flex-direction:column}
+#em button{border-color:var(--rd);color:var(--rd);font-size:12px;padding:5px 9px}
+#set{top:62px;right:8px;padding:12px;display:none;width:230px;font-size:13px}
+#set label{display:block;margin:8px 0 3px;color:var(--mu)}
+#set input[type=range]{width:100%}#set select{width:100%;box-sizing:border-box;background:#0b1424;border:1px solid var(--ln);border-radius:9px;color:var(--tx);padding:8px;font:inherit}
+#set button{width:100%;margin-top:6px}
+#set p{margin:8px 0 0;color:var(--mu);font-size:11px}
+#info{left:8px;right:8px;bottom:20px;padding:12px;display:none}
+#info h2{margin:0;font-size:20px;letter-spacing:.5px}
+#info .sub{color:var(--mu);margin-bottom:8px}
+.g{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 10px}
+.g b{display:block;font-size:15px}.g span{color:var(--mu);font-size:11px}
+#spark{width:100%;height:34px;margin-top:8px}
+#acts{display:flex;gap:6px;margin-top:8px}#acts button{flex:1}
+#att{position:absolute;left:8px;bottom:3px;font-size:10px;color:var(--mu)}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="top" class="pn"><input id="q" placeholder="Callsign, Kennzeichen, Typ …" autocomplete="off"><button id="loc" title="Mein Standort">⌖</button><button id="cfg" title="Einstellungen">⚙</button></div>
+<div id="st" class="pn"><i class="dot"></i><span id="sm">…</span></div>
+<div id="em" class="pn"></div>
+<div id="set" class="pn">
+<button id="un"></button><button id="tr"></button>
+<label>Mindesthöhe: <span id="mv">0</span></label><input id="ma" type="range" min="0" max="40000" step="1000" value="0"><label>Karte</label><select id="mp"></select>
+<button id="sv" style="display:none">Als Datei speichern (Live-Modus)</button>
+<p id="note"></p></div>
+<div id="info" class="pn"></div>
+<div id="att">© OpenStreetMap · © CARTO · Daten: adsb.lol / airplanes.live</div>
+<script>
+const $=s=>document.querySelector(s),cv=$('#c'),cx=cv.getContext('2d'),PI=Math.PI;
+let W=0,H=0,DPR=1,V={lat:50.03,lon:8.57,z:7},mode='demo',units='av',trails=true,minAlt=0,sel=null,follow=false,qv='',fails=0,err='',srcN='',ms='dark',tErr=0,tOk=0,S={lat:50.03,lon:8.57};
+const A=new Map(),TC=new Map();
+try{const s=JSON.parse(localStorage.getItem('sr')||'{}');if(s.u)units=s.u;if(s.t===false)trails=false;if(s.v)V=s.v;if(s.m)ms=s.m;S={lat:V.lat,lon:V.lon}}catch(e){}
+const save=()=>{try{localStorage.setItem('sr',JSON.stringify({u:units,t:trails,m:ms,v:{lat:V.lat,lon:V.lon,z:V.z}}))}catch(e){}};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const mx=(lo,z)=>(lo+180)/360*256*2**z,my=(la,z)=>{const s=Math.sin(la*PI/180);return(.5-Math.log((1+s)/(1-s))/(4*PI))*256*2**z};
+const inv=(x,y,z)=>{const n=256*2**z;return[Math.atan(Math.sinh(PI*(1-2*y/n)))*180/PI,x/n*360-180]};
+function rs(){DPR=devicePixelRatio||1;W=cv.clientWidth;H=cv.clientHeight;cv.width=W*DPR;cv.height=H*DPR;cx.setTransform(DPR,0,0,DPR,0,0)}
+addEventListener('resize',rs);rs();
+function zoomAt(x,y,nz){nz=Math.max(2,Math.min(17,nz));const ll=inv(mx(V.lon,V.z)+x-W/2,my(V.lat,V.z)+y-H/2,V.z);V.z=nz;const c=inv(mx(ll[1],nz)-(x-W/2),my(ll[0],nz)-(y-H/2),nz);V.lat=c[0];V.lon=c[1]}
+function pan(dx,dy){const c=inv(mx(V.lon,V.z)-dx,my(V.lat,V.z)-dy,V.z);V.lat=Math.max(-80,Math.min(80,c[0]));V.lon=c[1]}
+/* ---------- Daten ---------- */
+const AL=[['DLH','A320','A321','A359','B748'],['EWG','A320','A319'],['RYR','B738'],['BAW','A320','A388'],['AFR','A320','A359'],['KLM','E190','B77W'],['SWR','A320','BCS3'],['AUA','E195','A320'],['UAE','A388','B77W'],['THY','A321','B738'],['CFG','B38M'],['EZY','A320'],['WZZ','A321'],['LOT','E195','B38M']];
+const rnd=(a,b)=>a+Math.random()*(b-a),pick=a=>a[Math.random()*a.length|0];
+function spawn(a){a.lat=S.lat+rnd(-3,3);a.lon=S.lon+rnd(-5,5);a.trail=[]}
+function simInit(){A.clear();S={lat:V.lat,lon:V.lon};const now=performance.now();
+ for(let i=0;i<70;i++){const al=pick(AL),h=(Math.random()*1e6|0).toString(16).padStart(6,'0'),hi=Math.random()<.6,a={hex:h,cs:al[0]+(100+Math.random()*8900|0),t:pick(al.slice(1)),r:'D-'+String.fromCharCode(65+Math.random()*26|0,65+Math.random()*26|0,65+Math.random()*26|0,65+Math.random()*26|0),
+  alt:hi?rnd(30000,40000):rnd(2000,16000),gs:hi?rnd(430,500):rnd(200,330),tr:rnd(0,360),vr:hi?0:pick([-1800,-900,0,1500,2200]),sq:'1000',ts:now,gnd:false};spawn(a);A.set(h,a)}
+ const e=[...A.values()][0];e.sq='7700';e.cs='DEMO7700'}
+function simTick(){const now=performance.now();for(const a of A.values()){const p=pos(a,now);a.lat=p[0];a.lon=p[1];a.ts=now;a.alt=Math.max(1500,Math.min(40000,a.alt+a.vr/60*1));
+ if(Math.abs(a.lat-S.lat)>3.5||Math.abs(a.lon-S.lon)>5.5){a.lat=2*S.lat-a.lat;a.lon=2*S.lon-a.lon;a.trail=[]}
+ push(a)}}
+function push(a){const l=a.trail[a.trail.length-1];if(!l||l[0]!==a.lat||l[1]!==a.lon){a.trail.push([a.lat,a.lon,a.alt]);if(a.trail.length>45)a.trail.shift()}}
+function ingest(list){const now=performance.now(),seen=new Set();
+ for(const o of list){if(o.lat==null||o.lon==null||!o.hex)continue;const h=o.hex;seen.add(h);let a=A.get(h);if(!a){a={hex:h,trail:[]};A.set(h,a)}
+  a.cs=(o.flight||'').trim()||o.r||h.toUpperCase();a.t=o.t||'';a.r=o.r||'';a.lat=o.lat;a.lon=o.lon;a.gnd=o.alt_baro==='ground';
+  a.alt=a.gnd?0:(+o.alt_baro||+o.alt_geom||0);a.gs=o.gs||0;a.tr=o.track??o.true_heading??a.tr??0;a.vr=o.baro_rate||0;a.sq=o.squawk||'';a.ts=now;push(a)}
+ for(const[h,a]of A)if(!seen.has(h)&&now-a.ts>30000){A.delete(h);if(sel===h)sel=null}}
+async function pull(){const r=Math.max(20,Math.min(250,Math.ceil(Math.hypot(W,H)/2*156543*Math.cos(V.lat*PI/180)/2**V.z/1852))),p=`${V.lat.toFixed(3)}/${V.lon.toFixed(3)}/${r}`;
+ const cX=mx(V.lon,V.z),cY=my(V.lat,V.z),b0=inv(cX-W/2,cY-H/2,V.z),b1=inv(cX+W/2,cY+H/2,V.z),
+  os=`https://opensky-network.org/api/states/all?lamin=${b1[0].toFixed(2)}&lomin=${b0[1].toFixed(2)}&lamax=${b0[0].toFixed(2)}&lomax=${b1[1].toFixed(2)}`;
+ const errs=[];for(const[n,u]of[['adsb.lol','https://api.adsb.lol/v2/point/'+p],['airplanes.live','https://api.airplanes.live/v2/point/'+p],['adsb.fi','https://opendata.adsb.fi/api/v2/lat/'+V.lat.toFixed(3)+'/lon/'+V.lon.toFixed(3)+'/dist/'+r],['OpenSky',os]]){
+  try{const res=await fetch(u);if(!res.ok){errs.push(n+': HTTP '+res.status);continue}const j=await res.json();let l=j.ac||j.aircraft;
+   if(!l&&Array.isArray(j.states))l=j.states.map(s=>({hex:s[0],flight:s[1],lon:s[5],lat:s[6],alt_baro:s[8]?'ground':(s[7]!=null?s[7]/.3048:0),gs:(s[9]||0)/.514444,track:s[10],baro_rate:(s[11]||0)/.00508,squawk:s[14]}));
+   if(!Array.isArray(l)){errs.push(n+': keine Daten');continue}
+   if(mode!=='live'){A.clear();sel=null;mode='live'}fails=0;srcN=n;err='';ingest(l);return}catch(e){errs.push(n+': '+(e.message||'Fehler'))}}err=errs.join(' · ');
+ if(mode==='live'&&++fails>3){mode='demo';simInit()}}
+function pos(a,now){const dt=Math.min((now-a.ts)/1000,20),d=a.gs*.514444*dt,r=a.tr*PI/180;return[a.lat+d*Math.cos(r)/111320,a.lon+d*Math.sin(r)/(111320*Math.cos(a.lat*PI/180))]}
+/* ---------- Zeichnen ---------- */
+const AP=[['FRA',50.033,8.571],['MUC',48.354,11.786],['BER',52.366,13.503],['HAM',53.63,9.988],['DUS',51.289,6.767],['CGN',50.866,7.143],['STR',48.69,9.222],['ZRH',47.458,8.548],['VIE',48.11,16.57],['AMS',52.31,4.768],['CDG',49.01,2.55],['LHR',51.47,-.454],['FCO',41.8,12.239],['MAD',40.472,-3.561],['BCN',41.297,2.078],['CPH',55.618,12.656],['WAW',52.166,20.967],['PRG',50.1,14.26],['IST',41.275,28.752],['LIS',38.774,-9.134],['BRU',50.901,4.484],['MXP',45.63,8.723]];
+const PL=new Path2D('M0-10L2-4L9 1V3L2 1L1 7L4 9V10L0 9L-4 10V9L-1 7L-2 1L-9 3V1L-2-4Z');
+const col=a=>a.gnd?'#8392ab':`hsl(${30+Math.min(a.alt,40000)/40000*260} 100% 60%)`;
+const match=a=>!qv||(a.cs+' '+a.r+' '+a.t).toUpperCase().includes(qv);
+const vis=a=>a.alt>=minAlt||a.gnd&&minAlt===0;
+const MAPS={dark:['Dunkel (Esri)',(z,x,y)=>`https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/${z}/${y}/${x}`],
+light:['Hell (Esri)',(z,x,y)=>`https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/${z}/${y}/${x}`],
+osm:['Straßenkarte (OSM)',(z,x,y)=>`https://tile.openstreetmap.org/${z}/${x}/${y}.png`],
+sat:['Satellit (Esri)',(z,x,y)=>`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`],
+topo:['Topografie (OpenTopoMap)',(z,x,y)=>`https://${'abc'[(x+y)%3]}.tile.opentopomap.org/${z}/${x}/${y}.png`]};
+const MZ={dark:16,light:16,osm:19,sat:19,topo:17};
+const BG={dark:'#0b1220',light:'#e8ecf1',osm:'#e6e2d8',sat:'#1b2a22',topo:'#e8e4d6'};
+function tile(z,x,y){const n=2**z;x=(x%n+n)%n;if(y<0||y>=n)return null;const k=ms+'/'+z+'/'+x+'/'+y;let t=TC.get(k);
+ if(!t){const u=MAPS[ms]?MAPS[ms][1](z,x,y):null;if(!u)return null;if(TC.size>400)TC.clear();t=new Image();t.onload=()=>tOk++;t.onerror=()=>tErr++;t.src=u;TC.set(k,t)}return t.complete&&t.naturalWidth?t:null}
+function draw(){const now=performance.now();
+ if(follow&&sel&&A.has(sel)){const p=pos(A.get(sel),now);V.lat=p[0];V.lon=p[1]}
+ cx.fillStyle=BG[ms]||'#0b1220';cx.fillRect(0,0,W,H);const cX=mx(V.lon,V.z),cY=my(V.lat,V.z),P=(la,lo)=>[mx(lo,V.z)-cX+W/2,my(la,V.z)-cY+H/2];
+ /* Gitter */
+ const a0=inv(cX-W/2,cY-H/2,V.z),a1=inv(cX+W/2,cY+H/2,V.z),st=V.z<3?20:V.z<5?5:V.z<7?2:V.z<9?1:.25;
+ cx.strokeStyle='rgba(120,140,170,.22)';cx.lineWidth=1;cx.beginPath();
+ for(let la=Math.ceil(a1[0]/st)*st;la<=a0[0];la+=st){const y=P(la,0)[1];cx.moveTo(0,y);cx.lineTo(W,y)}
+ for(let lo=Math.ceil(a0[1]/st)*st;lo<=a1[1];lo+=st){const x=P(0,lo)[0];cx.moveTo(x,0);cx.lineTo(x,H)}cx.stroke();
+ /* Kacheln */
+ const zi=Math.max(2,Math.min(MZ[ms]||17,Math.round(V.z))),sc=2**(V.z-zi),tX=mx(V.lon,zi),tY=my(V.lat,zi);
+ for(let x=Math.floor((tX-W/2/sc)/256);x<=Math.floor((tX+W/2/sc)/256);x++)for(let y=Math.floor((tY-H/2/sc)/256);y<=Math.floor((tY+H/2/sc)/256);y++){
+  const t=tile(zi,x,y);if(t)cx.drawImage(t,(x*256-tX)*sc+W/2,(y*256-tY)*sc+H/2,256*sc+.5,256*sc+.5)}
+ /* Flughäfen */
+ cx.font='11px system-ui';cx.textBaseline='middle';
+ if(V.z>=5)for(const[n,la,lo]of AP){const[x,y]=P(la,lo);if(x<-20||x>W+20||y<-20||y>H+20)continue;cx.fillStyle='#5b6c8a';cx.fillRect(x-3,y-3,6,6);if(V.z>=6){cx.lineWidth=3;cx.strokeStyle='rgba(7,11,20,.85)';cx.strokeText(n,x+7,y);cx.fillStyle='#9fb0cc';cx.fillText(n,x+7,y)}}
+ /* Flugzeuge */
+ const list=[];
+ for(const a of A.values()){if(!vis(a))continue;const p=pos(a,now),[x,y]=P(p[0],p[1]);if(x<-30||x>W+30||y<-30||y>H+30)continue;a._x=x;a._y=y;a._p=p;list.push(a)}
+ for(const a of list){const hot=a.hex===sel,dim=!match(a);
+  if((trails||hot)&&a.trail.length>1){cx.lineWidth=hot?2.2:1.2;cx.globalAlpha=dim?.1:hot?.9:.4;cx.strokeStyle=col(a);cx.beginPath();
+   a.trail.forEach((q,i)=>{const[tx,ty]=P(q[0],q[1]);i?cx.lineTo(tx,ty):cx.moveTo(tx,ty)});cx.lineTo(a._x,a._y);cx.stroke()}}
+ for(const a of list){const hot=a.hex===sel,dim=!match(a),em=['7500','7600','7700'].includes(a.sq);
+  cx.globalAlpha=dim?.15:1;
+  if(em){cx.strokeStyle='#ff4d6d';cx.lineWidth=2;cx.beginPath();cx.arc(a._x,a._y,14+4*Math.sin(now/200),0,2*PI);cx.stroke()}
+  if(hot){cx.strokeStyle='#2ef2ff';cx.lineWidth=1.5;cx.beginPath();cx.arc(a._x,a._y,17,0,2*PI);cx.stroke()}
+  cx.save();cx.translate(a._x,a._y);cx.rotate(a.tr*PI/180);const k=hot?1.25:.95;cx.scale(k,k);cx.shadowColor=col(a);cx.shadowBlur=8;cx.fillStyle=col(a);cx.fill(PL);cx.restore();
+  if(!dim&&(hot||V.z>=7.5||qv)){cx.shadowBlur=0;cx.lineWidth=3;cx.strokeStyle='rgba(7,11,20,.85)';cx.strokeText(a.cs,a._x+13,a._y-2);cx.fillStyle=hot?'#fff':'#dbe5f5';cx.fillText(a.cs,a._x+13,a._y-2)}}
+ cx.globalAlpha=1;cx.shadowBlur=0;V._l=list;requestAnimationFrame(draw)}
+/* ---------- Eingabe ---------- */
+const ptr=new Map();let ld=0,moved=0,t0=0;
+cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);ptr.set(e.pointerId,[e.clientX,e.clientY]);moved=0;t0=Date.now();if(ptr.size===2){const[p,q]=[...ptr.values()];ld=Math.hypot(p[0]-q[0],p[1]-q[1])}});
+cv.addEventListener('pointermove',e=>{const o=ptr.get(e.pointerId);if(!o)return;const n=[e.clientX,e.clientY];
+ if(ptr.size===1){const dx=n[0]-o[0],dy=n[1]-o[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>4){pan(dx,dy);follow=false;fb()}}
+ else if(ptr.size===2){ptr.set(e.pointerId,n);const[p,q]=[...ptr.values()],d=Math.hypot(p[0]-q[0],p[1]-q[1]),r=cv.getBoundingClientRect();if(ld)zoomAt((p[0]+q[0])/2-r.left,(p[1]+q[1])/2-r.top,V.z+Math.log2(d/ld));ld=d;moved=99;return}
+ ptr.set(e.pointerId,n)});
+const up=e=>{const was=ptr.size===1&&moved<=4&&Date.now()-t0<500;ptr.delete(e.pointerId);if(ptr.size<2)ld=0;
+ if(was){const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;let b=null,bd=26;for(const a of V._l||[]){if(!match(a))continue;const d=Math.hypot(a._x-x,a._y-y);if(d<bd){bd=d;b=a}}pick_(b?b.hex:null)}else afterMove()};
+cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+cv.addEventListener('wheel',e=>{e.preventDefault();const r=cv.getBoundingClientRect();zoomAt(e.clientX-r.left,e.clientY-r.top,V.z-e.deltaY*.0025);afterMove()},{passive:false});
+let mt;function fb(){clearTimeout(mt);mt=setTimeout(afterMove,400)}
+function afterMove(){clearTimeout(mt);save();if(mode==='demo'&&Math.hypot(V.lat-S.lat,V.lon-S.lon)>2.5)simInit();else pull()}
+function pick_(h){sel=h;follow=false;info()}
+/* ---------- UI ---------- */
+const fU=(v,k)=>units==='av'?{alt:[Math.round(v).toLocaleString('de-DE'),'ft'],gs:[Math.round(v),'kt'],vr:[Math.round(v),'ft/min']}[k]:{alt:[Math.round(v*.3048).toLocaleString('de-DE'),'m'],gs:[Math.round(v*1.852),'km/h'],vr:[(v*.00508).toFixed(1),'m/s']}[k];
+function info(){const el=$('#info'),a=A.get(sel);if(!a){el.style.display='none';return}el.style.display='block';
+ const al=a.gnd?['Boden','']:fU(a.alt,'alt'),gs=fU(a.gs,'gs'),vr=fU(a.vr,'vr'),p=pos(a,performance.now());
+ const ys=a.trail.map(t=>t[2]),mn=Math.min(...ys),mxx=Math.max(...ys,mn+1),pts=ys.map((y,i)=>`${i/(Math.max(ys.length-1,1))*300},${32-(y-mn)/(mxx-mn)*28}`).join(' ');
+ el.innerHTML=`<h2 style="color:${col(a)}">${esc(a.cs)}</h2><div class="sub">${esc(a.t||'—')} · ${esc(a.r||'—')} · Squawk ${esc(a.sq||'—')}</div>
+ <div class="g"><div><b>${al[0]} ${al[1]}</b><span>Höhe</span></div><div><b>${gs[0]} ${gs[1]}</b><span>Geschwindigkeit</span></div><div><b>${Math.round(a.tr)}°</b><span>Kurs</span></div>
+ <div><b>${vr[0]>0?'+':''}${vr[0]} ${vr[1]}</b><span>Steigrate</span></div><div><b>${p[0].toFixed(3)}</b><span>Breite</span></div><div><b>${p[1].toFixed(3)}</b><span>Länge</span></div></div>
+ <svg id="spark" viewBox="0 0 300 36" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="${col(a)}" stroke-width="2"/></svg>
+ <div id="acts"><button id="fo" class="${follow?'on':''}">Folgen</button><button id="x">Schließen</button></div>`;
+ $('#fo').onclick=()=>{follow=!follow;info()};$('#x').onclick=()=>pick_(null)}
+function stat(){const n=[...A.values()].filter(vis).length;$('#sm').textContent=(mode==='live'?'LIVE':'DEMO')+' · '+n+' Flugzeuge';$('#st').className='pn '+mode;
+ $('#note').textContent=(tErr&&!tOk?'Kartenkacheln laden nicht (Netzwerk blockiert?). ':'')+(mode==='live'?'Echtzeitdaten aktiv · Quelle: '+srcN:'Demo: simulierter Verkehr. Echte Live-Daten und Kartenkacheln laden, wenn die Datei lokal im Browser oder als App geöffnet wird.'+(err?' Letzter Fehler: '+err:''));
+ const em=[...A.values()].filter(a=>['7500','7600','7700'].includes(a.sq)),box=$('#em');box.style.display=em.length?'flex':'none';
+ box.innerHTML='';em.slice(0,3).forEach(a=>{const b=document.createElement('button');b.textContent='⚠ '+a.sq+' · '+a.cs;b.onclick=()=>{sel=a.hex;const p=pos(a,performance.now());V.lat=p[0];V.lon=p[1];info()};box.appendChild(b)});
+ if(sel)info()}
+const lab=()=>{$('#un').textContent='Einheiten: '+(units==='av'?'ft / kt':'m / km/h');$('#tr').textContent='Spuren: '+(trails?'an':'aus');$('#tr').className=trails?'on':'';$('#mv').textContent=fU(minAlt,'alt').join(' ')};
+$('#un').onclick=()=>{units=units==='av'?'si':'av';lab();save();info()};
+$('#tr').onclick=()=>{trails=!trails;lab();save()};
+$('#ma').oninput=e=>{minAlt=+e.target.value;lab()};
+const am=()=>{if(!MAPS[ms])ms='dark';const d=' · Daten: adsb.lol / airplanes.live';$('#att').textContent=ms==='sat'?'Bilder © Esri'+d:ms==='osm'?'© OpenStreetMap'+d:ms==='topo'?'© OpenStreetMap · © OpenTopoMap (CC-BY-SA)'+d:'Esri, HERE, Garmin, © OpenStreetMap-Mitwirkende'+d;$('#mp').value=ms;TC.clear()};
+
+for(const k in MAPS){const o=document.createElement('option');o.value=k;o.textContent=MAPS[k][0];$('#mp').appendChild(o)}
+$('#mp').onchange=e=>{ms=e.target.value;am();save()};
+
+am();
+$('#cfg').onclick=()=>{const s=$('#set');s.style.display=s.style.display==='block'?'none':'block'};
+$('#q').oninput=e=>{qv=e.target.value.trim().toUpperCase()};
+$('#q').onkeydown=e=>{if(e.key!=='Enter')return;const a=[...A.values()].find(a=>qv&&match(a)&&vis(a));if(a){sel=a.hex;const p=pos(a,performance.now());V.lat=p[0];V.lon=p[1];V.z=Math.max(V.z,8);e.target.blur();info()}};
+$('#loc').onclick=()=>{try{navigator.geolocation.getCurrentPosition(p=>{V.lat=p.coords.latitude;V.lon=p.coords.longitude;V.z=8;afterMove()},()=>{})}catch(e){}};
+if(window.claude&&claude.use)claude.use('downloads').then(d=>{if(!d)return;const b=$('#sv');b.style.display='block';
+ b.onclick=()=>d.save({filename:'skyradar.html',data:new Blob(['<!DOCTYPE html>\n'+document.documentElement.outerHTML],{type:'text/html'})}).catch(()=>{})}).catch(()=>{});
+lab();simInit();draw();pull();
+setInterval(()=>{if(mode==='demo')simTick()},1000);setInterval(pull,6000);setInterval(stat,1000);stat();
+</script></body></html>
